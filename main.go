@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/gob"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"example.com/project/handlers"
@@ -39,13 +41,17 @@ func getSession(req *http.Request) *sessions.Session {
 	return session
 }
 
+func setAuthorizationHeader(req *http.Request, session *sessions.Session) {
+	if session != nil && !session.IsNew {
+		req.Header.Set("Authorization", "Bearer "+session.Values["token"].(string))
+	}
+}
+
 func getLinks(session *sessions.Session) map[string]interface{} {
 	var links map[string]interface{}
-	request, err := http.NewRequest("GET", os.Getenv("WEB_SERVICE_URL"), nil)
+	request, err := http.NewRequest(http.MethodGet, os.Getenv("WEB_SERVICE_URL"), nil)
 	if err == nil {
-		if session != nil && !session.IsNew {
-			request.Header.Set("Authorization", "Bearer "+session.Values["token"].(string))
-		}
+		setAuthorizationHeader(request, session)
 		httpClient := &http.Client{}
 		resp, err := httpClient.Do(request)
 		if err == nil {
@@ -222,29 +228,107 @@ func logoutSender(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
 
+func getLink(links map[string]interface{}, name string) (string, error) {
+	link, exists := links[name].(map[string]interface{})
+	if exists == false {
+		return "", errors.New(name + " is undefined")
+	}
+	url, exists := link["href"].(string)
+	if exists == false {
+		return "", errors.New(name + " is undefined")
+	}
+	return url, nil
+}
+
+func getMethods(url string, session *sessions.Session) ([]string, error) {
+	request, err := http.NewRequest(http.MethodOptions, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	setAuthorizationHeader(request, session)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	methods := strings.Split(resp.Header.Get("Access-Control-Allow-Methods"), ",")
+	return methods, nil
+}
+
 type showDashboardPageData struct {
-	Labels []sharedModels.Label
+	Labels  []interface{}
+	Methods []string
 }
 
 func showDashboard(w http.ResponseWriter, req *http.Request) {
-	session, _, tmp := getPageData(req)
+	session, links, tmp := getPageData(req)
 	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	sender, exists := session.Values["user"]
-	if exists == false {
+
+	labelsURL, err := getLink(links, "labels")
+	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	log.Print(sender)
-	// labels, err := models.GetLabelsBySender(client, sender.(string))
-	// if err != nil {
-	// 	handleError(w, req, http.StatusInternalServerError)
-	// 	return
-	// }
-	err := tmp.ExecuteTemplate(w, "dashboard.html", &showDashboardPageData{
-		Labels: nil,
+
+	request, err := http.NewRequest(http.MethodGet, os.Getenv("WEB_SERVICE_URL")+labelsURL, nil)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	setAuthorizationHeader(request, session)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(request)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	resources, ok := result["_embedded"].(map[string]interface{})
+	if !ok {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	labels, ok := resources["labels"].([]interface{})
+	if !ok {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	for _, labelI := range labels {
+		label := labelI.(map[string]interface{})
+		labelLinks, ok := label["_links"].(map[string]interface{})
+		if !ok {
+			handleError(w, req, http.StatusInternalServerError)
+			return
+		}
+		labelURL, err := getLink(labelLinks, "self")
+		if err != nil {
+			handleError(w, req, http.StatusInternalServerError)
+			return
+		}
+
+		methods, err := getMethods(os.Getenv("WEB_SERVICE_URL")+labelURL, session)
+		if err != nil {
+			handleError(w, req, http.StatusInternalServerError)
+			return
+		}
+
+		label["methods"] = methods
+	}
+
+	methods, err := getMethods(os.Getenv("WEB_SERVICE_URL")+labelsURL, session)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	err = tmp.ExecuteTemplate(w, "dashboard.html", &showDashboardPageData{
+		Labels:  labels,
+		Methods: methods,
 	})
 	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)
@@ -267,71 +351,98 @@ func getCreateLabel(w http.ResponseWriter, req *http.Request) {
 }
 
 func postCreateLabel(w http.ResponseWriter, req *http.Request) {
+	session, links, tmp := getPageData(req)
+	if session == nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
 	err := req.ParseForm()
 	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	session := getSession(req)
-	if session == nil {
-		handleError(w, req, http.StatusInternalServerError)
-		return
-	}
 	sender, exists := session.Values["user"]
 	if exists == false {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	log.Print(sender)
-	// label, validationErr, err := models.CreateLabel(
-	// 	sender.(string),
-	// 	req.Form.Get("recipient"),
-	// 	req.Form.Get("locker"),
-	// 	req.Form.Get("size"),
-	// )
-	// if err != nil {
-	// 	handleError(w, req, http.StatusInternalServerError)
-	// 	return
-	// }
-	// if validationErr != nil {
-	// 	tmp := getTemplates(req)
-	// 	err = tmp.ExecuteTemplate(w, "createLabel.html", &createLabelPageData{
-	// 		Error: validationErr,
-	// 	})
-	// 	if err != nil {
-	// 		handleError(w, req, http.StatusInternalServerError)
-	// 	}
-	// 	return
-	// }
-	// label.Save(client)
+	label, validationErr, err := sharedModels.CreateLabel(
+		sender.(string),
+		req.Form.Get("recipient"),
+		req.Form.Get("locker"),
+		req.Form.Get("size"),
+	)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	if validationErr != nil {
+		err = tmp.ExecuteTemplate(w, "createLabel.html", &createLabelPageData{
+			Error: validationErr,
+		})
+		if err != nil {
+			handleError(w, req, http.StatusInternalServerError)
+		}
+		return
+	}
+	labelsLink, exists := links["labels"].(map[string]interface{})
+	if exists == false {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	labelsURL, exists := labelsLink["href"].(string)
+	if exists == false {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	body, err := json.Marshal(label)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	request, err := http.NewRequest(http.MethodPost, os.Getenv("WEB_SERVICE_URL")+labelsURL, bytes.NewBuffer(body))
+	request.Header.Set("Content-type", "application/json")
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	setAuthorizationHeader(request, session)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(request)
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, req, "/sender/dashboard", http.StatusSeeOther)
 }
 
 func removeLabel(w http.ResponseWriter, req *http.Request) {
-	vars := mux.Vars(req)
-	labelID := vars["labelId"]
-
 	session := getSession(req)
 	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	sender, exists := session.Values["user"]
-	if exists == false {
+	err := req.ParseForm()
+	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
 
-	log.Print(labelID, sender)
-	// err = models.RemoveLabel(
-	// 	client,
-	// 	sender.(string),
-	// 	labelID,
-	// )
-	// if err != nil {
-	// 	handleError(w, req, http.StatusInternalServerError)
-	// 	return
-	// }
+	request, err := http.NewRequest(http.MethodDelete, os.Getenv("WEB_SERVICE_URL")+req.Form.Get("labelUrl"), nil)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	setAuthorizationHeader(request, session)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(request)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
 	http.Redirect(w, req, "/sender/dashboard", http.StatusSeeOther)
 }
 
@@ -432,15 +543,15 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/", index)
-	r.Handle("/sender/register", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(getRegisterSender), handleError)).Methods("GET")
-	r.Handle("/sender/register", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(postRegisterSender), handleError)).Methods("POST")
-	r.Handle("/sender/login", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(getLoginSender), handleError)).Methods("GET")
-	r.Handle("/sender/login", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(postLoginSender), handleError)).Methods("POST")
+	r.Handle("/sender/register", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(getRegisterSender), handleError)).Methods(http.MethodGet)
+	r.Handle("/sender/register", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(postRegisterSender), handleError)).Methods(http.MethodPost)
+	r.Handle("/sender/login", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(getLoginSender), handleError)).Methods(http.MethodGet)
+	r.Handle("/sender/login", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(postLoginSender), handleError)).Methods(http.MethodPost)
 	r.Handle("/sender/logout", handlers.SessionHandler(store, sessionName, http.HandlerFunc(logoutSender), handleError))
 	r.Handle("/sender/dashboard", handlers.SessionHandler(store, sessionName, http.HandlerFunc(showDashboard), handleError))
-	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(getCreateLabel), handleError)).Methods("GET")
-	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(postCreateLabel), handleError)).Methods("POST")
-	r.Handle("/sender/labels/{labelId}/remove", handlers.SessionHandler(store, sessionName, http.HandlerFunc(removeLabel), handleError)).Methods("POST")
+	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(getCreateLabel), handleError)).Methods(http.MethodGet)
+	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(postCreateLabel), handleError)).Methods(http.MethodPost)
+	r.Handle("/sender/labels/{labelId}/remove", handlers.SessionHandler(store, sessionName, http.HandlerFunc(removeLabel), handleError)).Methods(http.MethodPost)
 	r.HandleFunc("/check/{login}", checkAvailability)
 	http.Handle("/", r)
 

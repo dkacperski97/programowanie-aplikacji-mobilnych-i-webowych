@@ -8,34 +8,44 @@
 		{{ template "header.html" }}
 		<main class="dashboard">
 			<h2>Etykiety paczek</h2>
+			{{range .Methods}}
+			{{ if eq . "POST" }}
 			<a class="regular-action" href="./labels/create">Generowanie etykiety</a>
+			{{end}}
+			{{end}}
 			{{ if .Labels }}
 			<ul class="labels-list">
-				{{ range .Labels }}
+				{{ range $label := .Labels }}
 				<li>
 					<h3>Etykieta</h3>
 					<ul class="label-details">
 						<li>
 							<h4>Adresat</h4>
-							<p>{{ .Recipient }}</p>
+							<p>{{ .recipient }}</p>
 						</li>
 						<li>
 							<h4>Identyfikator skrytki</h4>
-							<p>{{ .Locker }}</p>
+							<p>{{ .locker }}</p>
 						</li>
 						<li>
 							<h4>Rozmiar</h4>
-							<p>{{ .Size }}</p>
+							<p>{{ .size }}</p>
 						</li>
+						
+						{{range .methods}}
+						{{ if eq . "DELETE" }}
 						<li>
 							<form
 								class="removeLabelForm"
 								method="POST"
-								action="/sender/labels/{{ .ID }}/remove"
+								action="/sender/labels/{{ $label.id }}/remove"
 							>
+								<input type="hidden" name="labelUrl" value="{{ $label._links.self.href }}" />
 								<button type="submit" class="regular-action">Usuń</button>
 							</form>
 						</li>
+						{{end}}
+						{{end}}
 					</ul>
 				</li>
 				{{ end }}

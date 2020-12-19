@@ -4,8 +4,12 @@
 	<nav>
 		<ul>
 			<li><a href="/">Strona główna</a></li>
-			{{ if getSession }}
+			{{ with getLinks }}
+			{{ if .labels }}
 			<li><a href="/sender/dashboard">Etykiety paczek</a></li>
+			{{ end }}
+			{{ end }}
+			{{ if getSession }}
 			<li><a href="/sender/logout">Wyloguj</a></li>
 			{{ else }}
 			<li><a href="/sender/register">Rejestracja nadawcy</a></li>

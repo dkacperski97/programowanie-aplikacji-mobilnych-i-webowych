@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"example.com/project/handlers"
+	"example.com/project/helpers"
 	"example.com/project/models"
+	sharedModels "github.com/dkacperski97/programowanie-aplikacji-mobilnych-i-webowych-models"
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
@@ -26,25 +28,69 @@ var (
 	client      *redis.Client
 	store       *redisstore.RedisStore
 	sessionName string
+	jwtSecret   []byte
 )
 
-func getTemplates(req *http.Request) *template.Template {
+func getSession(req *http.Request) *sessions.Session {
 	session, err := store.Get(req, sessionName)
+	if err != nil {
+		return nil
+	}
+	return session
+}
+
+func getLinks(session *sessions.Session) map[string]interface{} {
+	var links map[string]interface{}
+	request, err := http.NewRequest("GET", os.Getenv("WEB_SERVICE_URL"), nil)
+	if err == nil {
+		if session != nil && !session.IsNew {
+			request.Header.Set("Authorization", "Bearer "+session.Values["token"].(string))
+		}
+		httpClient := &http.Client{}
+		resp, err := httpClient.Do(request)
+		if err == nil {
+			var result map[string]interface{}
+			json.NewDecoder(resp.Body).Decode(&result)
+			var ok bool
+			links, ok = result["_links"].(map[string]interface{})
+			if !ok {
+				err = errors.New("_links is undefined")
+			}
+		}
+	}
+
+	if err != nil {
+		return nil
+	}
+	return links
+}
+
+func getTemplates(session *sessions.Session, links map[string]interface{}) *template.Template {
 	tmp := template.New("_func").Funcs(template.FuncMap{
 		"getDate": time.Now,
 		"getSession": func() *sessions.Session {
-			if err != nil || session.IsNew {
+			if session.IsNew {
 				return nil
 			}
 			return session
+		},
+		"getLinks": func() map[string]interface{} {
+			return links
 		},
 	})
 	tmp = template.Must(tmp.ParseGlob("templates/*.html"))
 	return tmp
 }
 
+func getPageData(req *http.Request) (*sessions.Session, map[string]interface{}, *template.Template) {
+	session := getSession(req)
+	links := getLinks(session)
+	tmp := getTemplates(session, links)
+	return session, links, tmp
+}
+
 func index(w http.ResponseWriter, req *http.Request) {
-	tmp := getTemplates(req)
+	_, _, tmp := getPageData(req)
 	err := tmp.ExecuteTemplate(w, "index.html", nil)
 	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)
@@ -56,7 +102,7 @@ type registerSenderPageData struct {
 }
 
 func getRegisterSender(w http.ResponseWriter, req *http.Request) {
-	tmp := getTemplates(req)
+	_, _, tmp := getPageData(req)
 	err := tmp.ExecuteTemplate(w, "signUpSender.html", &registerSenderPageData{
 		Error: nil,
 	})
@@ -85,7 +131,7 @@ func postRegisterSender(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if validationErr != nil {
-		tmp := getTemplates(req)
+		_, _, tmp := getPageData(req)
 		err = tmp.ExecuteTemplate(w, "signUpSender.html", &registerSenderPageData{
 			Error: validationErr,
 		})
@@ -103,7 +149,7 @@ type loginSenderPageData struct {
 }
 
 func getLoginSender(w http.ResponseWriter, req *http.Request) {
-	tmp := getTemplates(req)
+	_, _, tmp := getPageData(req)
 	err := tmp.ExecuteTemplate(w, "loginSender.html", &registerSenderPageData{
 		Error: nil,
 	})
@@ -126,7 +172,7 @@ func postLoginSender(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if !isValid {
-		tmp := getTemplates(req)
+		_, _, tmp := getPageData(req)
 		err = tmp.ExecuteTemplate(w, "loginSender.html", &registerSenderPageData{
 			Error: errors.New("Niepoprawne dane logowania"),
 		})
@@ -136,14 +182,20 @@ func postLoginSender(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	session, err := store.Get(req, sessionName)
-	if err != nil {
+	session := getSession(req)
+	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
 
 	session.Values["user"] = req.Form.Get("login")
 	session.Values["loginTime"] = time.Now()
+
+	session.Values["token"], err = helpers.GetSenderToken(req.Form.Get("login"), jwtSecret)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
 
 	if err = sessions.Save(req, w); err != nil {
 		handleError(w, req, http.StatusInternalServerError)
@@ -154,15 +206,15 @@ func postLoginSender(w http.ResponseWriter, req *http.Request) {
 }
 
 func logoutSender(w http.ResponseWriter, req *http.Request) {
-	session, err := store.Get(req, sessionName)
-	if err != nil {
+	session := getSession(req)
+	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
 
 	session.Options.MaxAge = -1
 
-	if err = sessions.Save(req, w); err != nil {
+	if err := sessions.Save(req, w); err != nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
@@ -171,12 +223,12 @@ func logoutSender(w http.ResponseWriter, req *http.Request) {
 }
 
 type showDashboardPageData struct {
-	Labels []models.Label
+	Labels []sharedModels.Label
 }
 
 func showDashboard(w http.ResponseWriter, req *http.Request) {
-	session, err := store.Get(req, sessionName)
-	if err != nil {
+	session, _, tmp := getPageData(req)
+	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
@@ -185,14 +237,14 @@ func showDashboard(w http.ResponseWriter, req *http.Request) {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	labels, err := models.GetLabelsBySender(client, sender.(string))
-	if err != nil {
-		handleError(w, req, http.StatusInternalServerError)
-		return
-	}
-	tmp := getTemplates(req)
-	err = tmp.ExecuteTemplate(w, "dashboard.html", &showDashboardPageData{
-		Labels: labels,
+	log.Print(sender)
+	// labels, err := models.GetLabelsBySender(client, sender.(string))
+	// if err != nil {
+	// 	handleError(w, req, http.StatusInternalServerError)
+	// 	return
+	// }
+	err := tmp.ExecuteTemplate(w, "dashboard.html", &showDashboardPageData{
+		Labels: nil,
 	})
 	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)
@@ -204,7 +256,7 @@ type createLabelPageData struct {
 }
 
 func getCreateLabel(w http.ResponseWriter, req *http.Request) {
-	tmp := getTemplates(req)
+	_, _, tmp := getPageData(req)
 	err := tmp.ExecuteTemplate(w, "createLabel.html", &createLabelPageData{
 		Error: nil,
 	})
@@ -220,8 +272,8 @@ func postCreateLabel(w http.ResponseWriter, req *http.Request) {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	session, err := store.Get(req, sessionName)
-	if err != nil {
+	session := getSession(req)
+	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
@@ -230,27 +282,28 @@ func postCreateLabel(w http.ResponseWriter, req *http.Request) {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
-	label, validationErr, err := models.CreateLabel(
-		sender.(string),
-		req.Form.Get("recipient"),
-		req.Form.Get("locker"),
-		req.Form.Get("size"),
-	)
-	if err != nil {
-		handleError(w, req, http.StatusInternalServerError)
-		return
-	}
-	if validationErr != nil {
-		tmp := getTemplates(req)
-		err = tmp.ExecuteTemplate(w, "createLabel.html", &createLabelPageData{
-			Error: validationErr,
-		})
-		if err != nil {
-			handleError(w, req, http.StatusInternalServerError)
-		}
-		return
-	}
-	label.Save(client)
+	log.Print(sender)
+	// label, validationErr, err := models.CreateLabel(
+	// 	sender.(string),
+	// 	req.Form.Get("recipient"),
+	// 	req.Form.Get("locker"),
+	// 	req.Form.Get("size"),
+	// )
+	// if err != nil {
+	// 	handleError(w, req, http.StatusInternalServerError)
+	// 	return
+	// }
+	// if validationErr != nil {
+	// 	tmp := getTemplates(req)
+	// 	err = tmp.ExecuteTemplate(w, "createLabel.html", &createLabelPageData{
+	// 		Error: validationErr,
+	// 	})
+	// 	if err != nil {
+	// 		handleError(w, req, http.StatusInternalServerError)
+	// 	}
+	// 	return
+	// }
+	// label.Save(client)
 	http.Redirect(w, req, "/sender/dashboard", http.StatusSeeOther)
 }
 
@@ -258,8 +311,8 @@ func removeLabel(w http.ResponseWriter, req *http.Request) {
 	vars := mux.Vars(req)
 	labelID := vars["labelId"]
 
-	session, err := store.Get(req, sessionName)
-	if err != nil {
+	session := getSession(req)
+	if session == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
@@ -269,15 +322,16 @@ func removeLabel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	err = models.RemoveLabel(
-		client,
-		sender.(string),
-		labelID,
-	)
-	if err != nil {
-		handleError(w, req, http.StatusInternalServerError)
-		return
-	}
+	log.Print(labelID, sender)
+	// err = models.RemoveLabel(
+	// 	client,
+	// 	sender.(string),
+	// 	labelID,
+	// )
+	// if err != nil {
+	// 	handleError(w, req, http.StatusInternalServerError)
+	// 	return
+	// }
 	http.Redirect(w, req, "/sender/dashboard", http.StatusSeeOther)
 }
 
@@ -308,7 +362,7 @@ type handleErrorPageData struct {
 
 func handleError(w http.ResponseWriter, req *http.Request, code int) {
 	w.WriteHeader(code)
-	tmp := getTemplates(req)
+	_, _, tmp := getPageData(req)
 	err := tmp.ExecuteTemplate(w, "error.html", &handleErrorPageData{
 		StatusCode: code,
 		StatusText: http.StatusText(code),
@@ -370,6 +424,7 @@ func main() {
 	if sessionName == "" {
 		sessionName = "session"
 	}
+	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 	gob.Register(&time.Time{})
 
 	fs := http.FileServer(http.Dir("./static"))

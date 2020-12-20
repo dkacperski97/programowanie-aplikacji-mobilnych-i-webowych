@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"example.com/project/handlers"
@@ -240,24 +239,8 @@ func getLink(links map[string]interface{}, name string) (string, error) {
 	return url, nil
 }
 
-func getMethods(url string, session *sessions.Session) ([]string, error) {
-	request, err := http.NewRequest(http.MethodOptions, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	setAuthorizationHeader(request, session)
-	httpClient := &http.Client{}
-	resp, err := httpClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	methods := strings.Split(resp.Header.Get("Access-Control-Allow-Methods"), ",")
-	return methods, nil
-}
-
 type showDashboardPageData struct {
-	Labels  []interface{}
-	Methods []string
+	Labels []interface{}
 }
 
 func showDashboard(w http.ResponseWriter, req *http.Request) {
@@ -298,37 +281,8 @@ func showDashboard(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	for _, labelI := range labels {
-		label := labelI.(map[string]interface{})
-		labelLinks, ok := label["_links"].(map[string]interface{})
-		if !ok {
-			handleError(w, req, http.StatusInternalServerError)
-			return
-		}
-		labelURL, err := getLink(labelLinks, "self")
-		if err != nil {
-			handleError(w, req, http.StatusInternalServerError)
-			return
-		}
-
-		methods, err := getMethods(os.Getenv("WEB_SERVICE_URL")+labelURL, session)
-		if err != nil {
-			handleError(w, req, http.StatusInternalServerError)
-			return
-		}
-
-		label["methods"] = methods
-	}
-
-	methods, err := getMethods(os.Getenv("WEB_SERVICE_URL")+labelsURL, session)
-	if err != nil {
-		handleError(w, req, http.StatusInternalServerError)
-		return
-	}
-
 	err = tmp.ExecuteTemplate(w, "dashboard.html", &showDashboardPageData{
-		Labels:  labels,
-		Methods: methods,
+		Labels: labels,
 	})
 	if err != nil {
 		handleError(w, req, http.StatusInternalServerError)

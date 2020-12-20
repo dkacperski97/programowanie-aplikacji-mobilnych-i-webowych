@@ -8,11 +8,7 @@
 		{{ template "header.html" }}
 		<main class="dashboard">
 			<h2>Etykiety paczek</h2>
-			{{range .Methods}}
-			{{ if eq . "POST" }}
 			<a class="regular-action" href="./labels/create">Generowanie etykiety</a>
-			{{end}}
-			{{end}}
 			{{ if .Labels }}
 			<ul class="labels-list">
 				{{ range $label := .Labels }}
@@ -32,8 +28,7 @@
 							<p>{{ .size }}</p>
 						</li>
 						
-						{{range .methods}}
-						{{ if eq . "DELETE" }}
+						{{ if and $label._links $label._links.self $label._links.self.href }}
 						<li>
 							<form
 								class="removeLabelForm"
@@ -44,7 +39,6 @@
 								<button type="submit" class="regular-action">Usuń</button>
 							</form>
 						</li>
-						{{end}}
 						{{end}}
 					</ul>
 				</li>

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -10,6 +12,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"example.com/project/handlers"
 	"example.com/project/helpers"
 	"example.com/project/models"
+	"github.com/coreos/go-oidc"
 	sharedModels "github.com/dkacperski97/programowanie-aplikacji-mobilnych-i-webowych-models"
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
@@ -41,7 +45,7 @@ func getSession(req *http.Request) *sessions.Session {
 }
 
 func setAuthorizationHeader(req *http.Request, session *sessions.Session) {
-	if session != nil && !session.IsNew {
+	if session != nil && !session.IsNew && session.Values["token"] != nil {
 		req.Header.Set("Authorization", "Bearer "+session.Values["token"].(string))
 	}
 }
@@ -197,7 +201,7 @@ func postLoginSender(w http.ResponseWriter, req *http.Request) {
 	session.Values["loginTime"] = time.Now()
 
 	session.Values["token"], err = helpers.GetSenderToken(req.Form.Get("login"), jwtSecret)
-	if err != nil {
+	if err != nil || session.Values["token"] == nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
@@ -217,11 +221,17 @@ func logoutSender(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	isAuthUser := session.Values["profile"] != nil
+
 	session.Options.MaxAge = -1
 
 	if err := sessions.Save(req, w); err != nil {
 		handleError(w, req, http.StatusInternalServerError)
 		return
+	}
+
+	if isAuthUser {
+		http.Redirect(w, req, "/auth/logout", http.StatusSeeOther)
 	}
 
 	http.Redirect(w, req, "/", http.StatusSeeOther)
@@ -420,6 +430,130 @@ func checkAvailability(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func authCallback(w http.ResponseWriter, req *http.Request) {
+	session := getSession(req)
+	if session == nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	if req.URL.Query().Get("state") != session.Values["state"] {
+		handleError(w, req, http.StatusBadRequest)
+		return
+	}
+
+	authenticator, err := models.NewAuthenticator()
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	token, err := authenticator.Config.Exchange(context.Background(), req.URL.Query().Get("code"))
+	if err != nil {
+		handleError(w, req, http.StatusUnauthorized)
+		return
+	}
+
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	oidcConfig := &oidc.Config{
+		ClientID: os.Getenv("AUTH0_CLIENT_ID"),
+	}
+
+	idToken, err := authenticator.Provider.Verifier(oidcConfig).Verify(context.Background(), rawIDToken)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	var profile map[string]interface{}
+	if err := idToken.Claims(&profile); err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	session.Values["user"] = profile["sub"]
+	session.Values["loginTime"] = time.Now()
+	session.Values["state"] = nil
+	session.Values["token"], err = helpers.GetSenderToken(profile["sub"].(string), jwtSecret)
+
+	if err != nil || session.Values["token"] == nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	session.Values["profile"] = profile
+	if err = sessions.Save(req, w); err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, req, "/", http.StatusSeeOther)
+}
+
+func authLogin(w http.ResponseWriter, req *http.Request) {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	state := base64.StdEncoding.EncodeToString(b)
+
+	session := getSession(req)
+	if session == nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	session.Values["state"] = state
+	err = session.Save(req, w)
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	authenticator, err := models.NewAuthenticator()
+	if err != nil {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, req, authenticator.Config.AuthCodeURL(state), http.StatusTemporaryRedirect)
+}
+
+func authLogout(w http.ResponseWriter, req *http.Request) {
+	logoutURL, err := url.Parse(os.Getenv("AUTH0_DOMAIN"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	logoutURL.Path += "/v2/logout"
+	parameters := url.Values{}
+
+	var scheme string
+	if req.TLS == nil {
+		scheme = "http"
+	} else {
+		scheme = "https"
+	}
+
+	returnTo, err := url.Parse(scheme + "://" + req.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	parameters.Add("returnTo", returnTo.String())
+	parameters.Add("client_id", os.Getenv("AUTH0_CLIENT_ID"))
+	logoutURL.RawQuery = parameters.Encode()
+
+	http.Redirect(w, req, logoutURL.String(), http.StatusTemporaryRedirect)
+}
+
 type handleErrorPageData struct {
 	StatusCode int
 	StatusText string
@@ -491,6 +625,7 @@ func main() {
 	}
 	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 	gob.Register(&time.Time{})
+	gob.Register(&map[string]interface{}{})
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
@@ -507,6 +642,9 @@ func main() {
 	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(postCreateLabel), handleError)).Methods(http.MethodPost)
 	r.Handle("/sender/labels/{labelId}/remove", handlers.SessionHandler(store, sessionName, http.HandlerFunc(removeLabel), handleError)).Methods(http.MethodPost)
 	r.HandleFunc("/check/{login}", checkAvailability)
+	r.Handle("/auth/callback", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(authCallback), handleError)).Methods(http.MethodGet)
+	r.Handle("/auth/login", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(authLogin), handleError)).Methods(http.MethodGet)
+	r.Handle("/auth/logout", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(authLogout), handleError)).Methods(http.MethodGet)
 	http.Handle("/", r)
 
 	port := os.Getenv("PORT")

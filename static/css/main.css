@@ -224,6 +224,14 @@ label.error-message {
 main.login {
 	max-width: calc(500px + 1rem);
 }
+.login-options-separator {
+	padding: 0.5rem;
+	text-align: center;
+}
+#oauthLoginButton {
+	width: calc(100% - 1rem);
+	margin: 0.5rem;
+}
 .alert {
 	margin: 0.5rem;
 	background: var(--color-fourth-light);

@@ -20,7 +20,7 @@ func (h sessionHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if session.IsNew {
+	if session.IsNew || session.Values["user"] == "" {
 		http.Redirect(w, req, "/sender/login", http.StatusSeeOther)
 		return
 	}
@@ -47,7 +47,7 @@ func (h withoutSessionHandler) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if session.IsNew {
+	if session.IsNew || session.Values["user"] == nil {
 		h.handler.ServeHTTP(w, req)
 		return
 	}

@@ -287,3 +287,28 @@ sup {
 .label-details form .regular-action:hover {
 	background-color: var(--color-fourth-brighter);
 }
+aside {
+	position: fixed;
+	right: 20px;
+	bottom: 6em;
+	margin-left: 20px;
+}
+#notifications {
+	padding: 0;
+	margin: 0;
+	list-style-type: none;
+}
+#notifications > li {
+	margin-top: 10px;
+}
+#notifications > li > a {
+	background-color: var(--color-first);
+	color: var(--color-first-contrast);
+	text-decoration: none;
+	padding: 20px;
+	display: block;
+	max-width: 400px;
+}
+#notifications > li > a:hover {
+	text-decoration: underline;
+}

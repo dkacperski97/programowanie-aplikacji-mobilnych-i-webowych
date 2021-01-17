@@ -205,6 +205,11 @@ func postLoginSender(w http.ResponseWriter, req *http.Request) {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
+	authorizationCookieValue := "Authorization=Bearer " + session.Values["token"].(string) + "; Path=/; Max-Age=86400"
+	if os.Getenv("SECURE_COOKIE") == "TRUE" {
+		authorizationCookieValue += "; Secure"
+	}
+	w.Header().Set("Set-Cookie", authorizationCookieValue)
 
 	if err = sessions.Save(req, w); err != nil {
 		handleError(w, req, http.StatusInternalServerError)
@@ -229,6 +234,7 @@ func logoutSender(w http.ResponseWriter, req *http.Request) {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Set-Cookie", "Authorization=; Max-Age=-1")
 
 	if isAuthUser {
 		http.Redirect(w, req, "/auth/logout", http.StatusSeeOther)
@@ -430,6 +436,18 @@ func checkAvailability(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func getWebSocket(w http.ResponseWriter, req *http.Request) {
+	if os.Getenv("PORT") == "" {
+		handleError(w, req, http.StatusInternalServerError)
+		return
+	}
+	data := map[string]interface{}{
+		"url": os.Getenv("NOTIFICATION_SERVICE_URL"),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
 func authCallback(w http.ResponseWriter, req *http.Request) {
 	session := getSession(req)
 	if session == nil {
@@ -485,6 +503,11 @@ func authCallback(w http.ResponseWriter, req *http.Request) {
 		handleError(w, req, http.StatusInternalServerError)
 		return
 	}
+	authorizationCookieValue := "Authorization=Bearer " + session.Values["token"].(string) + "; Path=/; Max-Age=86400"
+	if os.Getenv("SECURE_COOKIE") == "TRUE" {
+		authorizationCookieValue += "; Secure"
+	}
+	w.Header().Set("Set-Cookie", authorizationCookieValue)
 
 	session.Values["profile"] = profile
 	if err = sessions.Save(req, w); err != nil {
@@ -641,6 +664,7 @@ func main() {
 	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(getCreateLabel), handleError)).Methods(http.MethodGet)
 	r.Handle("/sender/labels/create", handlers.SessionHandler(store, sessionName, http.HandlerFunc(postCreateLabel), handleError)).Methods(http.MethodPost)
 	r.Handle("/sender/labels/{labelId}/remove", handlers.SessionHandler(store, sessionName, http.HandlerFunc(removeLabel), handleError)).Methods(http.MethodPost)
+	r.HandleFunc("/ws-url", getWebSocket).Methods(http.MethodGet)
 	r.HandleFunc("/check/{login}", checkAvailability)
 	r.Handle("/auth/callback", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(authCallback), handleError)).Methods(http.MethodGet)
 	r.Handle("/auth/login", handlers.WithoutSessionHandler(store, sessionName, http.HandlerFunc(authLogin), handleError)).Methods(http.MethodGet)

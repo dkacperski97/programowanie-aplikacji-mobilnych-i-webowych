@@ -554,23 +554,15 @@ func authLogout(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	logoutURL.Path += "/v2/logout"
-	parameters := url.Values{}
-
-	var scheme string
-	if req.TLS == nil {
-		scheme = "http"
-	} else {
-		scheme = "https"
-	}
-
-	returnTo, err := url.Parse(scheme + "://" + req.Host)
+	returnToURL, err := url.Parse(os.Getenv("AUTH0_RETURN_TO_URL"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	parameters.Add("returnTo", returnTo.String())
+
+	parameters := url.Values{}
+	parameters.Add("returnTo", returnToURL.String())
 	parameters.Add("client_id", os.Getenv("AUTH0_CLIENT_ID"))
 	logoutURL.RawQuery = parameters.Encode()
 

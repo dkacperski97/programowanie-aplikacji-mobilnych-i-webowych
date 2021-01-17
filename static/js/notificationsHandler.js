@@ -29,8 +29,8 @@ fetch(`/ws-url`).then((res) => {
 					}
 				}, 10000);
 			};
-			ws.onerror = function (evt) {
-				print('ERROR: ' + evt.data);
+			ws.onerror = function (e) {
+				console.log(e);
 			};
 
 			const initAside = () => {
